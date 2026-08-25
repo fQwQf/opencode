@@ -177,7 +177,16 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           yield* activate()
           if (observed === target) yield* ready.open
-        }).pipe(Effect.catchCause((cause) => Effect.logError("failed to reload plugins", { cause }))),
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* Effect.logError("failed to reload plugins", { cause })
+              // A failed generation must still release flush waiters, or every
+              // unbounded flush caller hangs for the rest of the process.
+              if (observed === target) yield* ready.open
+            }),
+          ),
+        ),
       ),
       Effect.forkScoped({ startImmediately: true }),
     )
