@@ -173,6 +173,34 @@ describe("PluginSupervisor config", () => {
     ).pipe(Effect.provide(Logger.layer([logger])))
   })
 
+  it.live("marks duplicate plugin IDs as failed instead of hanging", () => {
+    const first = path.join(import.meta.dir, "../plugin/fixtures/duplicate-id-a.ts")
+    const second = path.join(import.meta.dir, "../plugin/fixtures/duplicate-id-b.ts")
+    return withLocation(
+      { plugins: ["-*", first, second] },
+      Effect.gen(function* () {
+        // Regression guard for #44975: a duplicate ID must not hang flush.
+        yield* ready().pipe(Effect.timeout("5 seconds"))
+        const plugins = yield* Plugin.Service
+        expect(yield* plugins.list()).toEqual([
+          {
+            id: Plugin.ID.make("duplicate-fixture"),
+            source: { type: "local", path: first },
+            status: "active",
+            tui: false,
+          },
+          {
+            id: Plugin.ID.make("duplicate-fixture"),
+            source: { type: "local", path: second },
+            status: "failed",
+            error: "Duplicate plugin ID: duplicate-fixture",
+            tui: false,
+          },
+        ])
+      }),
+    )
+  })
+
   it.live("loads auto-discovered plugin files", () =>
     withLocation(
       undefined,

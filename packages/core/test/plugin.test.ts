@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { ToolFailure } from "@opencode-ai/ai"
-import { Context, Effect, Exit, Fiber, Schema, Stream } from "effect"
+import { Context, Effect, Fiber, Schema, Stream } from "effect"
 import { Plugin as EffectPlugin } from "@opencode-ai/plugin/effect"
 import { Config as ConfigSchema } from "@opencode-ai/schema/config"
 import { Agent } from "@opencode-ai/core/agent"
@@ -152,22 +152,25 @@ describe("Plugin", () => {
     }),
   )
 
-  it.effect("rejects duplicate IDs before replacing active plugins", () =>
+  it.effect("marks duplicate IDs as failed and keeps the first", () =>
     Effect.gen(function* () {
       const plugins = yield* Plugin.Service
-      const active = Plugin.ID.make("active")
       const duplicate = "duplicate"
-      yield* plugins.activate([{ id: active, version: "1", effect: () => Effect.void }])
+      yield* plugins.activate([
+        { id: duplicate, version: "1", effect: () => Effect.void },
+        { id: duplicate, version: "2", effect: () => Effect.void },
+      ])
 
-      const result = yield* plugins
-        .activate([
-          { id: duplicate, version: "1", effect: () => Effect.void },
-          { id: duplicate, version: "1", effect: () => Effect.void },
-        ])
-        .pipe(Effect.exit)
-
-      expect(Exit.isFailure(result)).toBe(true)
-      expect(yield* plugins.list()).toEqual([{ id: active, source: { type: "builtin" }, status: "active", tui: false }])
+      expect(yield* plugins.list()).toEqual([
+        { id: Plugin.ID.make(duplicate), source: { type: "builtin" }, status: "active", tui: false },
+        {
+          id: Plugin.ID.make(duplicate),
+          source: { type: "builtin" },
+          status: "failed",
+          error: `Duplicate plugin ID: ${duplicate}`,
+          tui: false,
+        },
+      ])
     }),
   )
 

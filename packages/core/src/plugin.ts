@@ -79,11 +79,30 @@ const layer = Layer.effect(
       plugins: readonly Versioned[],
       failures: readonly Extract<Plugin.Info, { readonly status: "failed" }>[] = [],
     ) {
-      const definitions = plugins.map((plugin) => ({ ...plugin, id: Plugin.ID.make(plugin.id) }))
-      const ids = new Set<Plugin.ID>()
-      for (const definition of definitions) {
-        if (ids.has(definition.id)) yield* Effect.die(new Error(`Duplicate plugin ID: ${definition.id}`))
-        ids.add(definition.id)
+      const seen = new Set<Plugin.ID>()
+      const duplicates: Extract<Plugin.Info, { readonly status: "failed" }>[] = []
+      // User-configured plugins can collide on ID; a defect here would wedge
+      // the supervisor's readiness latch and hang every flush caller forever.
+      const definitions = plugins.flatMap((plugin) => {
+        const definition = { ...plugin, id: Plugin.ID.make(plugin.id) }
+        if (!seen.has(definition.id)) {
+          seen.add(definition.id)
+          return [definition]
+        }
+        duplicates.push({
+          id: definition.id,
+          source: definition.source ?? { type: "builtin" },
+          status: "failed",
+          error: `Duplicate plugin ID: ${definition.id}`,
+          tui: definition.tui ?? false,
+        })
+        return []
+      })
+      const ids = seen
+      if (duplicates.length > 0) {
+        yield* Effect.logWarning("skipping plugins with duplicate IDs", {
+          duplicates: duplicates.map((entry) => entry.id),
+        })
       }
 
       yield* lock.withPermit(
@@ -100,7 +119,11 @@ const layer = Layer.effect(
               return definition.id === candidate?.id && definition.version === candidate.version
             })
           ) {
-            const nextInventory = [...Array.from(active.values(), (entry) => activeInfo(entry.plugin)), ...failures]
+            const nextInventory = [
+              ...Array.from(active.values(), (entry) => activeInfo(entry.plugin)),
+              ...failures,
+              ...duplicates,
+            ]
             if (JSON.stringify(inventory) === JSON.stringify(nextInventory)) return
             inventory = nextInventory
             yield* bus.publish(Plugin.Event.Updated, {})
@@ -147,7 +170,7 @@ const layer = Layer.effect(
               yield* Effect.forEach(removed, ([, entry]) => Scope.close(entry.scope, Exit.void).pipe(Effect.ignore), {
                 discard: true,
               })
-              inventory = [...nextInventory, ...failures]
+              inventory = [...nextInventory, ...failures, ...duplicates]
             }),
           )
           yield* bus.publish(Plugin.Event.Updated, {})
